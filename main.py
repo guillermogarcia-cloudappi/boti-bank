@@ -417,6 +417,7 @@ llm = ChatOpenAI(
     api_key=LLM_API_KEY,
     model=LLM_MODEL_NAME,
     temperature=0.0
+    default_headers={"API-Key": LLM_API_KEY}
 )
 llm_with_tools = llm.bind_tools(tools)
 
