@@ -1,3 +1,4 @@
+import asyncio
 import json
 import os
 import uuid
@@ -396,12 +397,53 @@ def credito_estado(cliente_id: str, config: RunnableConfig) -> str:
     except requests.exceptions.RequestException as e:
         return f"ERROR: no se pudo contactar al agente de credito ({e})."
 
+# ==========================================
+# 2.c HERRAMIENTAS MCP GOBERNADAS (MCP Server registrado en Agent Manager)
+# ==========================================
+# Opcional (apagado por defecto): si USE_MCP_TOOLS=true, el agente carga en tiempo de
+# arranque las herramientas que expone el MCP Server de BotiBank (mcp_tools.py) a través
+# del Tool Configurations del propio agente en Agent Manager. La URL/API key las inyecta
+# la plataforma como variables de entorno al adjuntar el MCP Server al agente — mismo
+# patrón que CREDITO_AGENT_URL/CREDITO_AGENT_API_KEY en la sección 2.b, pero para MCP.
+#
+# El deny-list de herramientas (p.ej. bloquear transferir_a_tercero) se aplica en el
+# propio MCP Server / Agent Manager: si una tool está denegada, simplemente no aparece
+# en la lista que devuelve get_tools(), el agente ni se entera de que existe.
+USE_MCP_TOOLS = os.getenv("USE_MCP_TOOLS", "false").strip().lower() == "true"
+MCP_TOOLS_URL = os.getenv("MCP_TOOLS_URL", "")
+MCP_TOOLS_API_KEY = os.getenv("MCP_TOOLS_API_KEY", "")
+
+def _cargar_mcp_tools() -> list:
+    """Conecta una sola vez al MCP Server (streamable-http) y devuelve sus tools ya
+    envueltas como BaseTool de LangChain, listas para bind_tools(). Si falla la conexión
+    (servidor caído, URL mal puesta), el agente sigue funcionando sin esas herramientas
+    en vez de no arrancar."""
+    from langchain_mcp_adapters.client import MultiServerMCPClient
+
+    headers = {"X-API-Key": MCP_TOOLS_API_KEY} if MCP_TOOLS_API_KEY else {}
+    client = MultiServerMCPClient({
+        "botibank_herramientas": {
+            "url": MCP_TOOLS_URL,
+            "transport": "streamable_http",
+            "headers": headers,
+        }
+    })
+    try:
+        return asyncio.run(client.get_tools())
+    except Exception as e:
+        print(f"[MCP] no se pudieron cargar las herramientas de {MCP_TOOLS_URL}: {e}")
+        return []
+
+mcp_tools = _cargar_mcp_tools() if (USE_MCP_TOOLS and MCP_TOOLS_URL) else []
+if mcp_tools:
+    print(f"[MCP] herramientas cargadas: {[t.name for t in mcp_tools]}")
+
 # Agrupamos las tools
 tools = [
     listar_clientes, consultar_cuentas, ingresar_dinero, transferir_dinero,
     listar_servicios, pagar_servicio, pagar_hipoteca,
     credito_solicitar_tarjeta, credito_comprar, credito_abonar, credito_estado
-]
+] + mcp_tools
 
 # ==========================================
 # 3. CONFIGURACIÓN DEL GRAFO Y AGENTE
@@ -457,6 +499,10 @@ TARJETAS DE CRÉDITO:
    rechaces una tarjeta por tu cuenta.
 8. Para abonar una tarjeta necesitás la cuenta de origen de la que se debita el dinero. Es el único
    dato que no podés deducir: si el usuario no la indicó, consultá sus cuentas y preguntale cuál usar.
+
+OTRAS HERRAMIENTAS (si están disponibles en esta conversación):
+9. Si el usuario pregunta por tipo de cambio entre monedas o por sucursales físicas en una ciudad,
+   usá la herramienta correspondiente en vez de inventar la respuesta.
 """)
 
 def agent_node(state: MessagesState):
