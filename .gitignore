@@ -5,3 +5,8 @@ include
 lib
 pyvenv.cfg
 __pycache__
+
+# Variables de entorno (nunca deben subirse, pueden contener credenciales reales)
+.env
+.env.*
+*.env
